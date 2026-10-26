@@ -1,0 +1,39 @@
+engcomp g5 - derived from s1q9 G9XP (uid 220, ghcr.io/johnkell9801-hub/s1q9@sha256:f1422b06...), declared in
+ai.reax.engine.parents with the parents G9XP declares (220 itself at this digest). Every change below is our own code
+(engcomp); everything else is G9XP's image unchanged (every G9XP cubin byte for byte; its Q8K / Q8-PB / Q8PAR levers on).
+No file of any other entry (no uid 56 e36g / uid 164 / 246 / 161 / 133 code). Every cubin here rebuilds byte for byte from
+the source next to it with the command given below (nvcc 13.4, docker nvidia/cuda:13.4.3-devel-ubuntu24.04).
+Settings of this image (Dockerfile ENV): Q8 from layer 1 (S1ENG_Q8_LO=1); ROTIN from layer 5 (ENGCOMP_ROTIN=1,
+ENGCOMP_ROTIN_LO=5, S1ENG_Q8_H=0: layers 1-4 keep G9XP's own "in" families); our GPTQ (ENGCOMP_GPTQ=1,
+ec_gptq_g9ri0b.pt); shift readout (ENGCOMP_SHIFT=1); EP (ENGCOMP_EP=1); ORD up 0.13 / down 0.03.
+Changed / added files:
+  q8.py      - ENGCOMP_ROTIN: the "in" families' int8 inputs rotated per 128-group of the lo order before the per-row
+               scale (ec_addnormr inside add + RMSNorm, ec_prepr otherwise; torch reference rotin_prep), weight rows
+               (W s) R, R = diag(d) H_128 / sqrt(128) (Sylvester, d from torch.Generator seed 20261025: rot_matrix), int8
+               rows from our GPTQ file (ENGCOMP_GPTQ, fingerprint-checked; tools/engcomp/gptq_q8.py); with S1ENG_Q8_H=0
+               the protected bf16 pass is gone (KH = 0). G9XP's fine families (ROT + its GPTQ) unchanged.
+               ENGCOMP_EP: the q8gr gate|up + SwiGLU + ROT launches go to our epgr_* twins (ecep.cubin) - same mainloop,
+               our epilogue, byte-identical outputs; on only after ep_setup's start-up check (epgr == q8gr byte for byte
+               on the real weights of the first and last rotated mlp_in family, R 1 .. 1088, outlier rows).
+               Off in this image (experiments, code inert unless their switch is set): ENGCOMP_ROTF (whole-row
+               rotation: ec_*rf kernels + rotf_consts.inc), ENGCOMP_ROTIN_HLO, ENGCOMP_SK (its cubin is not shipped).
+  ecep.cu/.cubin - EP: G9XP's q8.cu (Q8K) included unchanged; our epilogue per tile: mu / is of a thread's 8 columns once in
+               registers, staging rows of 4 quarters x 36 floats (row stride 144: conflict-free row pass), the row pass with
+               4 lanes per row x 32 elements (index bits 0..4 by butterflies in registers, bits 5 / 6 by lane xor 1 / 2,
+               G9XP's stage order and lower x + y / upper x - y ops, fmaxf amax, 127 / amax, rn), int8 as 2 x 16-byte stores.
+               nvcc -O3 -arch=sm_120a -cubin -std=c++17 -Xptxas -v -o ecep.cubin ecep.cu (G9XP's q8.cu next to it)
+  q8pb.py    - Q8-NX for a rotated family goes through q8.addnorm's ec_addnormr with x unwritten; its start-up gate
+               compares ec_addnormr with / without x for such a family. ENGCOMP_F96 (off here; its cubin is not shipped).
+  batchfwd.py - ENGCOMP_SHIFT: the approximate lanes answer with the fp32 readout (l32, the fp32 guard's) minus its row
+               maximum, rounded to bf16 (the fp32 guard unchanged). ENGCOMP_SNAP (off here).
+  ecrin.cu/.cubin, rotf_consts.inc - ec_addnormr / ec_prepr (and the ROTF twins, unused here);
+               nvcc -O3 -arch=sm_120a -cubin -std=c++17 -o ecrin.cubin ecrin.cu (rotf_consts.inc next to it)
+  model.py   - ENGCOMP_ORD_UP / _DN: the fp32 guard's threshold by the side of the fp32 winner - the validator's argmax
+               resolves a reference top-2 tie to the lower option index, so a winner below its runner-up survives a tie and
+               is re-run only when its margin is < DN, a winner above it when < UP. Our code; the idea was seen in uid 56's
+               e36g (pjs). Unset: G9XP's single threshold S1ENG_Q8_TAU32. Off here: ENGCOMP_ORD_EPS, ENGCOMP_TIE,
+               ENGCOMP_PF (our probabilistic guard), ENGCOMP_DUMP (offline guard tuning).
+  batchfwd.py - also ENGCOMP_ONORM_Q8 hooks (off in this image); onorm.cu / onormpv.cu / .cubin / .py: NormArgs / PVNArgs
+               gain xq / xs / xmu / xm / xrot (n_finR may write the rotated int8 out_proj input; unused here: fam None).
+               onormpv: nvcc 13.4 -O3 -arch=sm_120a -cubin -std=c++17 -Xptxas -v -DFFS_SHIP -DONORM_V=5 -DONORM_PF2
+               -DONORM_SILU_FIN -DONORM_FINROLL -o onormpv.cubin onormpv.cu (onorm.cu next to it).

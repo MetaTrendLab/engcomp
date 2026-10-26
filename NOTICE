@@ -1,0 +1,6 @@
+g5 kernel sources (uid 14, ghcr.io/elninolab/g5@61d0c90c)
+
+Files derived from earlier engine entries are declared in the image's ai.reax.engine.parents label (listed in README.md)
+and credited to their authors; ENGCOMP-NOTICE says what we changed. Earlier entries build on the REAX Engine
+(github.com/reaxlabs/reax-engine, REAX Engine License 1.1). Our changes are released under the MIT licence in LICENSE
+and, as the REAX engine-competition rules provide, licensed to the licensor of the REAX Engine on submission.
