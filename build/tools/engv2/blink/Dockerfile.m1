@@ -1,0 +1,200 @@
+# engv2 Blink m1 (both slots, one image) = the vision reference image (eager readout of images, text path equal to the
+# text reference) + every kept text step of the b line up to b12 + every kept vision step of the v line up to v8n:
+#   dense LT / attention tiles / streaming (b3, v3), EngineCore gather (b5) + poll (b10), REAX_STREAM=half with the wave
+#   cap and group spacing (b7, b11, b12), per-step new-request cap + idle hold + group tags / whole-group gather (b14),
+#   pinned Inductor autotune choices (b7), small-M LM pins + lm_head (lt_small4, b7lt4) and vision-tower
+#   pins (lt_vis, v4), MoE unpermute + gather-quant (b8, b9, v5), vision RMSNorm / RoPE / gelu*up (v6-v8),
+#   image_route.py + entry_dual.sh (compiled instance for text, eager instance for images; REAX_DUAL=0: one instance).
+# entry_m1.sh runs every start-up check / derivation on the still-empty GPU, then entry_dual.sh.
+# Build from tools/: docker build -f engv2/blink/Dockerfile.m1 -t engv2-blink:m8 .
+#   (m1 = the b11 level, m2 = b12, m3 = b14, m3g = b14 + CUDA graphs up to 2560 tokens on the text instance,
+#    m5 = m3g + moe_gact + moe_dn, m6 = m5 + vis_pack, m7 = m6 + vis_attn, m7t = m7 + kernel variant search,
+#    m8 = m7t + TD small-M tiles + eager-decoder fusions on the image instance, ..., m30 = + vis_pack1 / vis_pool1 / vis_attn2)
+ARG BASE=ghcr.io/reaxlabs/reax-engine-ref-blink@sha256:97d06a91453979d6756176aba4a1cb1d78b38390643c37ed1b83f79a4ff9f606
+FROM ${BASE} AS lt
+COPY sidecar/reax_lt/reax_lt.cpp sidecar/reax_lt/setup.py /build/
+RUN cd /build && TORCH_CUDA_ARCH_LIST=12.0 python3 setup.py build_ext --inplace >/tmp/build.log 2>&1 || (tail -30 /tmp/build.log; exit 1)
+
+FROM ${BASE}
+ARG SP=/usr/local/lib/python3.12/dist-packages
+COPY engv2/blink/d1_dense.patch engv2/blink/d1_attn.patch engv2/blink/lt_derive.py engv2/blink/dense_op.py /opt/engv2/
+RUN cd $SP && patch -p1 --forward < /opt/engv2/d1_dense.patch \
+    && patch -p1 --forward < /opt/engv2/d1_attn.patch \
+    && python3 /opt/engv2/lt_derive.py vllm/model_executor/determinism/batch_invariant.py \
+    && python3 /opt/engv2/dense_op.py vllm/model_executor/determinism/batch_invariant.py
+COPY --from=lt /build/reax_lt.cpython-312-x86_64-linux-gnu.so $SP/
+COPY engv2/blink/engv2_stream.py /opt/reax/engine/engv2_stream.py
+COPY engv2/blink/stream_patch.py engv2/blink/image_route.py engv2/blink/engv2_pins.py engv2/blink/entry_dual.sh /opt/engv2/
+RUN python3 /opt/engv2/stream_patch.py /opt/reax/engine/serve.py \
+    && python3 /opt/engv2/image_route.py /opt/reax/engine/backends/vllm_readout.py \
+    && python3 -m compileall -q /opt/reax/engine
+COPY engv2/blink/core_gather.py engv2/blink/core_poll.py engv2/blink/core_group.py engv2/blink/step_cap.py /opt/engv2/
+RUN python3 /opt/engv2/core_gather.py $SP/vllm/v1/engine/core.py && python3 /opt/engv2/core_poll.py $SP/vllm/v1/engine/core.py \
+    && python3 /opt/engv2/core_group.py $SP/vllm/v1/engine/core.py \
+    && python3 /opt/engv2/step_cap.py $SP/vllm/v1/core/sched/scheduler.py \
+    && python3 -m compileall -q $SP/vllm/v1/engine/core.py $SP/vllm/v1/core/sched/scheduler.py
+# one_req.py: a REAX half wave as one /v1/completions request with per-prompt option letters (vllm_xargs reax_allowed);
+# passive until the REAX server sends it (REAX_ONE_REQ=1 in engv2_stream.py, default off)
+COPY engv2/blink/one_req.py /opt/engv2/
+RUN python3 /opt/engv2/one_req.py $SP/vllm/entrypoints/openai/completion/serving.py \
+    && python3 -m compileall -q $SP/vllm/entrypoints/openai/completion/serving.py
+COPY engv2/blink/autotune_hidden.py engv2/blink/pins/visible.json engv2/blink/pins/hidden.json /opt/engv2/
+RUN python3 /opt/engv2/autotune_hidden.py install $SP
+# bf16g (PRO 6000 session's exact bf16 TN GEMM, H1): a third candidate family in lt_small4's per-bucket tables
+COPY engv2/blink/bf16g/bf16gemm.cu engv2/blink/bf16g/bf16g.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -cubin -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/bf16gemm.cubin /opt/engv2/bf16gemm.cu \
+    && cp /opt/engv2/bf16g.py $SP/reax_bf16g.py
+# b7 (R3, PRO 6000 session's bf16g7: f8g6 v7 with bf16 mma, any BM, 16-byte-row epilogue, persistent): REAX_BF16G7=1
+# (default on since 27 Oct; 0 = off) makes entry_m1.sh export REAX_BF16G7_CUBIN + the PRO 6000 per-M winner allow-list
+# (REAX_BF16G7_ONLY), so lt_small4 / lt_vis byte-check and time them as more bf16g candidates. PRO 6000: all
+# byte-identical, 30 dense points 1.088x vs the best exact LT / TD; text e2e (m25, one session, FULL 87, 4 runs) 322.3
+# vs 314.8 dps = +2.4 % 4/4, bit-exact, start-up +8 s with the allow-list; 5090: e2e neutral (not the eval card).
+# Built here from source (FAQ award checklist: CI rebuilds every .cubin byte for byte): the same bytes as the committed
+# bf16g7/bf16g7.cubin (sha256 fa55c8dc7e713482..., nvcc 13.0.88 of this base; -Xptxas -v is recorded in .note.nv.tkinfo)
+COPY engv2/blink/bf16g7/bf16g7.cu engv2/blink/bf16g7/allow_pro6000.txt /opt/engv2/
+RUN nvcc -arch=sm_120a -O3 -cubin -Xptxas -v -o /opt/engv2/bf16g7.cubin /opt/engv2/bf16g7.cu >/dev/null \
+    && mv /opt/engv2/allow_pro6000.txt /opt/engv2/bf16g7_allow.txt
+ENV REAX_BF16G7=1
+# b7s (ours, bf16g7/b7sk.cu: serial stream-K b7, q35 f8sk's scheme; byte-identical to b7): REAX_BF16SK=1 (default off)
+# makes entry_m1.sh export REAX_BF16SK_CUBIN, so the b7s kernels join the bf16g candidates (REAX_BF16SK_ONLY limits them)
+COPY engv2/blink/bf16g7/b7sk.cu /opt/engv2/
+RUN nvcc -arch=sm_120a -O3 -cubin -Xptxas -v -o /opt/engv2/b7sk.cubin /opt/engv2/b7sk.cu >/dev/null
+COPY engv2/blink/lt_small4.py engv2/blink/lt_vis.py engv2/blink/lt_frozen.py /opt/engv2/
+# lt_vis first: its anchor ends at NUM_SMS, lt_small4's lm_head hunk inserts right after the TD return
+RUN python3 /opt/engv2/lt_vis.py $SP/vllm/model_executor/determinism/batch_invariant.py \
+    && python3 /opt/engv2/lt_small4.py $SP/vllm/model_executor/determinism/batch_invariant.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/determinism
+# fp8d's GEMM: the q35 f8gemm kernel (e4m3, per-row x per-column scale epilogue); the Python side is the last layer
+COPY engv2/blink/fp8d/f8gemm.cu engv2/blink/fp8d/f8cubin.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -cubin -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/f8gemm.cubin /opt/engv2/f8gemm.cu \
+    && cp /opt/engv2/f8cubin.py $SP/reax_f8cubin.py
+# -Xlinker --strip-all on every nvcc -shared line (28 Oct): without it the .symtab keeps nvcc's temp-file name
+# tmpxft_<nvcc pid>_..., so a rebuild differs in 2 bytes unless nvcc gets the same pid (pid 7 in a docker build RUN);
+# stripped, the .so is pid-independent, and .text / .nv_fatbin / .rodata / .dynsym / exports are unchanged
+COPY engv2/blink/moe_gquant.cu engv2/blink/moe_gquant.py engv2/blink/moe_unperm.py /opt/engv2/
+RUN nvcc -O3 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120f,code=sm_120f -o /opt/engv2/libreax_gquant.so /opt/engv2/moe_gquant.cu \
+    && F=$SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 /opt/engv2/moe_unperm.py $F && python3 /opt/engv2/moe_gquant.py $F \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+# m5: gelu*up + NVFP4 quant in one pass (moe_gact, PRO 6000 +2.3 % under graphs) and the own down-projection grouped
+# GEMM (moe_dn, -14 % unit at m 887 on the 5090); both byte-checked at start (entry_m1.sh), REAX_MOE_GACT=0 /
+# REAX_MOE_DN=0 switch them off. Tactic search (m7t): moe_dn (warps x rows x fragments), moe_gact (launch shapes) and
+# vis_attn (warps per CTA) have variants; the derive byte-checks every one and takes the fastest exact one on the card.
+COPY engv2/blink/moe_gact.cu engv2/blink/moe_gact.py engv2/blink/moe_dn.cu engv2/blink/moe_dn.py /opt/engv2/
+RUN nvcc -O3 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120f,code=sm_120f -o /opt/engv2/libreax_gact.so /opt/engv2/moe_gact.cu \
+    && nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_moedn.so /opt/engv2/moe_dn.cu \
+    && F=$SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 /opt/engv2/moe_gact.py $F && python3 /opt/engv2/moe_dn.py $F \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+# moe_gu (ours): the gate|up grouped GEMM with moe_gact's gelu*up + NVFP4 quant as its epilogue (c1 never written),
+# byte-identical to the three vLLM ops (5090 unit: 20 variants x 2 numerics exact at 51 cases, -6 % vs cutlass + gact at
+# m 887); REAX_MOE_GU=1 (default off) makes entry_m1.sh derive it
+COPY engv2/blink/moe_gu.cu engv2/blink/moe_gu.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_moegu.so /opt/engv2/moe_gu.cu \
+    && F=$SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 /opt/engv2/moe_gu.py $F \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+# moe_data (REAX_MOE_DATA=1, default off): vLLM's get_cutlass_moe_mm_data in run_cutlass_moe_fp4 (4 launches per MoE layer,
+# ~9 us on the 5090) as one CTA; problem sizes / offsets equal vLLM's, dispatch maps consistent (vLLM's in-expert row
+# order comes from atomics too), checked against vLLM's op on 5 m x 4 routings at the first call
+COPY engv2/blink/moe_data.cu engv2/blink/moe_data.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_moedata.so /opt/engv2/moe_data.cu \
+    && python3 /opt/engv2/moe_data.py $SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+# rgemm router (REAX_RGEMM=1, default off): GateLinear tier 4 (torch.mm, out_dtype fp32, [M, 2816] x [128, 2816]) through
+# rgemm.cu (bf16g7's Gemm, same per-logit k16 chain) wherever the first call's check over every M 1..16384 finds it
+# byte-identical to the engine's own torch.mm (5090: 16384 / 16384, 11-13 -> 6-9 us at M <= 1000)
+COPY engv2/blink/rgemm/rgemm.cu engv2/blink/rgemm/rgemm.py engv2/blink/rgemm/router_op.py /opt/engv2/
+RUN nvcc -arch=sm_120a -O3 -cubin -o /opt/engv2/rgemm.cubin /opt/engv2/rgemm.cu \
+    && python3 /opt/engv2/router_op.py install $SP/vllm/model_executor/layers/fused_moe/router/gate_linear.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/router
+# m6: the vision tower on the valid patches only (vis_pack: packed varlen attention without the padding bias, -16 to -19 %
+# tower time on the 5090 with the real weights, bit-identical); REAX_VIS_PACK=0 switches it off.
+# m7: the packed attention through vis_attn.cu (the reference kernel's arithmetic with FA2 tiles, bit-identical,
+# 1.7-1.8x per layer); REAX_VIS_ATTN=0 keeps aten's kernel.
+COPY engv2/blink/vis_norm.py engv2/blink/vis_rope.py engv2/blink/vis_mlp.py engv2/blink/vis_pack.py engv2/blink/vis_attn.cu engv2/blink/entry_m1.sh /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_vattn.so /opt/engv2/vis_attn.cu \
+    && F=$(python3 -c "import transformers,os;print(os.path.dirname(transformers.__file__))")/models/gemma4/modeling_gemma4.py \
+    && python3 /opt/engv2/vis_norm.py $F && python3 /opt/engv2/vis_rope.py $F && python3 /opt/engv2/vis_mlp.py $F \
+    && python3 /opt/engv2/vis_pack.py $F \
+    && python3 -m compileall -q $(dirname $F)
+# m30 (28 Oct, all off by default; entry_dm sets them on the image instance):
+#   vis_pack1 (REAX_VIS_PACK_SYNC1=1): vis_pack's encoder entry with one device-to-host read instead of three
+#   vis_pool1 (REAX_VIS_POOL1=1, needs SYNC1): the pooler's per-image boolean index after the tower replaced by a slice whose
+#     count comes with vis_pack1's read (5090 vision 29.34 -> 30.01 dps on one image, bit-exact 1024/1024)
+#   libreax_vattn2.so from vis_attn2.cu (REAX_VIS_ATTN_LIB=/opt/engv2/libreax_vattn2.so; derive and server read the same
+#     variable): vis_attn.cu's three variants + 21 more (tail skip, full-block softmax, ldmatrix.x2, warps 2..8, two-row
+#     tiles); the derive byte-checks all 24 and takes the fastest exact one (5090 +1.55 %, PRO 6000 w4_b1_o2 -11.6 %/layer)
+COPY engv2/blink/vis_pack1.py engv2/blink/vis_pool1.py engv2/blink/vis_attn2.cu /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_vattn2.so /opt/engv2/vis_attn2.cu \
+    && F=$(python3 -c "import transformers,os;print(os.path.dirname(transformers.__file__))")/models/gemma4/modeling_gemma4.py \
+    && python3 /opt/engv2/vis_pack1.py $F && python3 /opt/engv2/vis_pool1.py $SP \
+    && python3 -m compileall -q $(dirname $F) $SP/vllm/model_executor/models/gemma4_mm.py
+# m8: the image instance's eager decoder through the Rune d0/d1 bit-exact fusions (tools/sidecar/reax_fused.py: q/k/v
+# RMSNorm + RoPE, post-attn norm + add + pre-FF norms + router, layer tail, next layer's input norm; unit test
+# tools/bench/rune_fused_bitexact.py ALL BIT-EXACT in this image); REAX_LM_FUSED=1 only on the eager instance
+# (entry_dual.sh), never under Dynamo (the compiled text instance keeps Inductor's kernels).
+COPY sidecar/reax_fused.py $SP/reax_fused.py
+COPY engv2/blink/lm_fused.patch /opt/engv2/
+RUN cd $SP && patch -p1 --forward < /opt/engv2/lm_fused.patch && python3 -m compileall -q vllm/model_executor/models/gemma4.py
+# fp8d (FAQ 3.0 Blink text gate 0.08 / 1.6 / 97 %): quantised dense layers (FP8 or INT8 W8A8, per-token x per-channel,
+# batch-invariant) only in the process with REAX_FP8_DENSE set (text instance; images stay exact); last layer: cheap to
+# rebuild while the numerics are explored
+# Blink-text-only vLLM modules (blink_overlay.py): head_sub and last_rows patch COPIES in /opt/engv2/overlay, imported only
+# with REAX_BLINK_OVERLAY=1 (entry_dual.sh: Blink text instance); every other process (Blink images, Jeffan) keeps the
+# stock logits_processor.py / gemma4.py / model_runner.py byte for byte
+# head_sub (auto = on for the Blink head): the lm_head on the option-code rows only (the allowed-token mask -infs the rest)
+# last_rows (auto = on for Blink text): the last layer's o_proj / MLP / MoE on the sampled rows only
+# samp_fast (REAX_SAMP_FAST=1, default off): the sampler tail (log-softmax, ranks, allowed-token mask, head_sub's GEMM
+# tiles) on many CTAs with the same bits; patches the stock sample/{logprob,logit_bias}.py and the overlay's head_sub
+COPY engv2/blink/blink_overlay.py engv2/blink/head_sub.py engv2/blink/last_rows.py engv2/blink/last_rows_fused.py engv2/blink/samp_fast.py /opt/engv2/
+RUN python3 /opt/engv2/blink_overlay.py build $SP /opt/engv2/overlay \
+    && python3 /opt/engv2/head_sub.py install /opt/engv2/overlay/logits_processor.py \
+    && python3 /opt/engv2/samp_fast.py install $SP/vllm /opt/engv2/overlay/logits_processor.py \
+    && python3 -m compileall -q $SP/vllm/v1/worker/gpu/sample \
+    && python3 /opt/engv2/last_rows.py /opt/engv2/overlay/gemma4.py /opt/engv2/overlay/model_runner.py \
+    && python3 /opt/engv2/last_rows_fused.py /opt/engv2/overlay/gemma4.py \
+    && python3 -m compileall -q /opt/engv2/overlay $SP/engv2_overlay.py
+# near_lt (REAX_LT_NEAR=1, off by default): one fastest row-invariant cuBLASLt algorithm per text dense shape, no bit-identity
+COPY engv2/blink/near_lt.py /opt/engv2/
+RUN python3 /opt/engv2/near_lt.py $SP/vllm/model_executor/determinism/batch_invariant.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/determinism
+COPY engv2/blink/fp8d/fp8d.py /opt/engv2/
+RUN cp /opt/engv2/fp8d.py $SP/reax_fp8d.py \
+    && python3 /opt/engv2/fp8d.py install $SP/vllm/model_executor/layers/linear.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/linear.py $SP/reax_fp8d.py $SP/reax_f8cubin.py
+# REAX_INPROC=1 (default off): the REAX server runs the text vLLM instance in-process (inproc.py; entry_dual.sh branch)
+COPY engv2/blink/inproc.py engv2/blink/thread_cpu.py engv2/blink/fn_cpu.py engv2/blink/enc_fast.py engv2/blink/spin_keep.py /opt/reax/engine/
+COPY engv2/blink/inproc_patch.py /opt/engv2/
+RUN python3 /opt/engv2/inproc_patch.py /opt/reax/engine/backends/vllm_readout.py && python3 -m compileall -q /opt/reax/engine
+# REAX_NODETOK=1 (default off): token-id logprob completions skip the output processor's detokenization (nodetok.py)
+COPY engv2/blink/nodetok.py /opt/engv2/
+RUN python3 /opt/engv2/nodetok.py $SP/vllm/entrypoints/openai/completion/serving.py \
+    && python3 -m compileall -q $SP/vllm/entrypoints/openai/completion
+ENV REAX_ATT_TILES=256:32:4:1,512:32:8:1 \
+    REAX_STREAM=half REAX_HALF_CAP=1 REAX_HALF_SPACE_MS=5 REAX_HALF_IDLE_HOLD_MS=6 REAX_GROUP_TAG=1 REAX_STEP_NEW_MAX=8 \
+    REAX_PINS_FILE=/opt/engv2/visible.json REAX_HIDDEN_PINS=/opt/engv2/hidden.json \
+    REAX_LT_SMALL_FILE=/tmp/reax_lt_small.pt REAX_LT_VIS_FILE=/tmp/reax_lt_vis.pt \
+    REAX_MOE_GQUANT_FILE=/tmp/reax_moe_gquant.txt REAX_MOE_UNPERM_FILE=/tmp/reax_moe_unperm.txt \
+    REAX_MOE_GACT_FILE=/tmp/reax_moe_gact.txt REAX_MOE_DN_FILE=/tmp/reax_moe_dn.txt REAX_MOE_GU_FILE=/tmp/reax_moe_gu.txt \
+    REAX_VIS_NORM_FILE=/tmp/reax_vis_norm.txt REAX_VIS_ROPE_FILE=/tmp/reax_vis_rope.txt REAX_VIS_MLP_FILE=/tmp/reax_vis_mlp.txt \
+    REAX_VIS_PACK_FILE=/tmp/reax_vis_pack.txt REAX_BF16G_CUBIN=/opt/engv2/bf16gemm.cubin \
+    REAX_F8GEMM_CUBIN=/opt/engv2/f8gemm.cubin
+# the vision reference bakes REAX_VLLM_EXTRA=--enforce-eager: the text instance must compile like the text reference.
+# Its CUDA graphs go up to 2560 tokens (57 sizes): a decision step (~880 tokens) then replays a graph instead of
+# launching every kernel from the EngineCore thread (launch-bound on a slow host CPU: PRO 6000 EPYC b14 + graphs 280.7
+# vs 257.5 dps, 5090 E-cores 250 vs 141; -3 % on the 14900K P-cores). Graphs do not change numerics (b3g == b3).
+# Sizes every 16 tokens in 640-1280: decision steps are 645-1014 tokens, 64-token spacing padded 3.8 % of a step's
+# tokens, 16-token spacing 0.85 % (87 sizes, startup +~5 s; 5090 A/B/B/A 243.1 / 245.9 / 246.6 / 230.5 dps).
+# cudagraph_mode FULL (27 Oct): every step replays ONE graph (Triton unified attention: AttentionCGSupport.ALWAYS) instead
+# of piecewise graphs + 30 eager attention calls; bit-exact 1024/1024; PRO 6000 (EPYC host) 315.0 vs 312.8 dps (+0.7 %,
+# 4/4 pairs, CPU 2.2-2.4 vs 2.6-2.8 ms/decision); 5090 (P-cores) -4 to -5 % (not the eval card). Image instance stays eager.
+# Memory (validator: reference co-resident at 0.45): text 0.24 (19.0 GiB weights + non-torch, 1.4 peak, 0.3 graphs ->
+# ~2.2 GiB KV on a 96 GB card) + images 0.22 (entry_dual default; 0.7 peak -> ~1.2 GiB KV) = 0.46, the later flag wins.
+ENV REAX_VLLM_EXTRA="--gpu-memory-utilization 0.24 --compilation-config={\"cudagraph_mode\":\"FULL\",\"cudagraph_capture_sizes\":[1,2,4,8,16,24,32,40,48,56,64,96,128,160,192,224,256,288,320,352,384,416,448,480,512,576,640,656,672,688,704,720,736,752,768,784,800,816,832,848,864,880,896,912,928,944,960,976,992,1008,1024,1040,1056,1072,1088,1104,1120,1136,1152,1168,1184,1200,1216,1232,1248,1264,1280,1344,1408,1472,1536,1600,1664,1728,1792,1856,1920,1984,2048,2112,2176,2240,2304,2368,2432,2496,2560]}" \
+    REAX_DUAL=1
+# reax_lt's source at its build path (the lt stage builds it in /build): with /opt/engv2/*.cu every native file's source is
+# in the image at the path its build line uses (FAQ award checklist; tools/engv2/native_audit.py rebuilds them all)
+COPY sidecar/reax_lt/reax_lt.cpp sidecar/reax_lt/setup.py /build/
+LABEL ai.reax.engine.models="blink,vision"
+ENTRYPOINT ["/opt/engv2/entry_m1.sh"]

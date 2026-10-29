@@ -1,0 +1,31 @@
+--- a/vllm/v1/attention/ops/triton_unified_attention.py	2026-10-25 14:32:21.201629995 +0000
++++ b/vllm/v1/attention/ops/triton_unified_attention.py	2026-10-25 16:16:30.041225591 +0000
+@@ -32,6 +32,14 @@
+ 
+ logger = init_logger(__name__)
+ is_batch_invariant = envs.VLLM_BATCH_INVARIANT
++
++import os as _os
++
++_REAX_ATT: dict = {}
++for _t in _os.environ.get("REAX_ATT_TILES", "").split(","):
++    if _t.strip():
++        _h, _bm, _w, _s = (int(v) for v in _t.split(":"))
++        _REAX_ATT[_h] = (_bm, _w, _s)
+ float8_info = torch.finfo(current_platform.fp8_dtype())
+ 
+ 
+@@ -958,6 +967,13 @@
+         BLOCK_Q = BLOCK_M // num_queries_per_kv
+         launch_num_warps = 8
+         launch_num_stages = 2
++    elif max_seqlen_q > 1 and _REAX_ATT.get(head_size):
++        _bm, _w, _s = _REAX_ATT[head_size]
++        if _bm >= BLOCK_M and _bm % num_queries_per_kv == 0:
++            BLOCK_M = _bm
++            BLOCK_Q = BLOCK_M // num_queries_per_kv
++            launch_num_warps = _w
++            launch_num_stages = _s
+ 
+     # Ideally we would launch with kernel with:
+     # \sum_i[ceil(query_len[i] / BLOCK_Q)] blocks.

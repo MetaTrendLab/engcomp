@@ -1,0 +1,58 @@
+{
+ "cacyaouugryc3ip54vtxlpbuxa747jkq3r2hhhwmsu2qvq4p5xn2.py": [
+  {
+   "R0_BLOCK": 128,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  },
+  {
+   "R0_BLOCK": 64,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  }
+ ],
+ "cr4n6kljbfmk2rpqbuqbzp4tymr7abektiur3upccizqgera45sx.py": [
+  {
+   "R0_BLOCK": 128,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  },
+  {
+   "R0_BLOCK": 128,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  }
+ ],
+ "cyzea5r4azp4ovexdlvgte3vdvyg3koplcwh3bjq2i5t5i2g7pin.py": [
+  {
+   "R0_BLOCK": 128,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  },
+  {
+   "R0_BLOCK": 64,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  }
+ ],
+ "czehewni6dloyatl2xk6hns54wpmoyres2h6dkhxqt4zuapcsva4.py": [
+  {
+   "R0_BLOCK": 256,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  },
+  {
+   "R0_BLOCK": 256,
+   "XBLOCK": 2,
+   "num_stages": 1,
+   "num_warps": 2
+  }
+ ]
+}

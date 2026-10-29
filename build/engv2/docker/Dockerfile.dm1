@@ -1,0 +1,38 @@
+# engv2 dm-all candidate (one image, every v2 slot): Blink text + vision = the 5090's m-line (tools/engv2/blink/Dockerfile.m1; m11+ = no .pth in our layers),
+# mammoth-1 / reax-1 = engv2/q35-engine on the reference image's own Python stack, jeffan = no-BI vLLM recipe.
+# Build from engv2/:  docker build -f docker/Dockerfile.dm1 -t engv2-dm:4 .   (needs engv2-blink:m11 built first)
+ARG BLINK=engv2-blink:m11
+ARG Q35REF=ghcr.io/reaxlabs/reax-engine-ref-mammoth@sha256:3080a593060542bccbdaf7cf0c66593fc182d9753b3facd50206df86d93b8588
+FROM ${Q35REF} AS q35ref
+USER root
+# FAQ 3.0 file screen covers every non-reference layer: the venv copied from the mammoth reference becomes OUR layer, so
+# drop the weight-suffix files it carries (numpy test data .npy/.npz/.pkl, setuptools' distutils-precedence.pth) before
+# the COPY; the screen list is reax_subnet/engreview.py WEIGHT_FILE_SUFFIXES. Checked after the build with
+# tools/engv2/layer_screen.py.
+RUN find /opt/venv -type f \( -name '*.pt' -o -name '*.pth' -o -name '*.safetensors' -o -name '*.bin' -o -name '*.npy' \
+      -o -name '*.npz' -o -name '*.gguf' -o -name '*.ckpt' -o -name '*.pkl' -o -name '*.onnx' -o -name '*.h5' \
+      -o -name '*.tflite' -o -name '*.msgpack' -o -name '*.pte' \) -print -delete
+FROM ${BLINK}
+USER root
+COPY --from=q35ref /opt/venv /opt/venv
+COPY q35-engine /opt/q35/engine
+COPY docker/entry_dm.sh /opt/engv2/entry_dm.sh
+# Jeffan: byte-identical faster FP8 linears (f8g6 g9 = CUTLASS sm120 k32 order + vLLM's ScaledEpilogue order), per-(N, K, M)
+# table built on the PRO 6000; the hook is imported from sitecustomize only with REAX_JEFFAN_F8=1 (entry_dm: Jeffan launch)
+COPY q35-engine/kern/f8g6.cubin q35-engine/f8g6.py jeffan/f8/engv2_jeffan_f8.py jeffan/f8/jeffan_f8_table_pro6000.json \
+     jeffan/f8/install.py q35-engine/kern/f8sk.cubin q35-engine/f8sk.py /opt/engv2/jf8/
+RUN python3 /opt/engv2/jf8/install.py
+RUN /opt/venv/bin/python -m compileall -q /opt/q35/engine && chmod +x /opt/engv2/entry_dm.sh
+# frozen cuBLASLt pick tables for the Blink lt_small4 / lt_vis derives (5 quiet offline derives on the PRO 6000, per-bucket
+# majority, lt_frozen.py derive-n; algo selections, not weights; *.lt so engreview's weight-file screen stays clear): each pick
+# is re-checked for exactness on the card at start-up, any mismatch falls back to the live derive; runsc paired text +4.3 %,
+# vision +4.9 %, bit-exact (j_ltab)
+COPY docker/ltfz/small-frozen.lt docker/ltfz/vis-frozen.lt /opt/engv2/ltfz/
+ENV REAX_LT_SMALL_FROZEN=/opt/engv2/ltfz/small-frozen.lt REAX_LT_VIS_FROZEN=/opt/engv2/ltfz/vis-frozen.lt
+# declared models (the label is the only difference between a full entry and a hedge entry, e.g. MODELS=mammoth,blink,jeffan,vision)
+ARG MODELS=mammoth,blink,reax1,jeffan,vision
+LABEL ai.reax.engine.models="${MODELS}" org.opencontainers.image.title="reax-engv2-dm"
+# engreview.check_image_config rejects User root / 0 / root group ("image runs as root", entry held at review); the
+# runner forces --user 10002:10002 anyway, so this only changes the image config, not what runs
+USER 10002:10002
+ENTRYPOINT ["/opt/engv2/entry_dm.sh"]

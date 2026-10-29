@@ -1,0 +1,3 @@
+Files under image/ that come from the REAX Engine reference images (ghcr.io/reaxlabs/reax-engine-ref-*) keep the REAX Engine License and the licences listed in the image's /licenses. Rewritten third-party files (vLLM and
+Hugging Face transformers: Apache-2.0; /opt/reax/engine: REAX Engine License) keep their original licence; the
+README lists them. Our own files are MIT.
