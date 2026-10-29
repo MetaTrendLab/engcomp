@@ -1,0 +1,88 @@
+--- a/vllm/model_executor/determinism/batch_invariant.py	2026-10-25 14:32:21.199629962 +0000
++++ b/vllm/model_executor/determinism/batch_invariant.py	2026-10-25 16:16:30.040225574 +0000
+@@ -286,6 +286,8 @@
+     assert bias is None or bias.dim() == 1, (
+         "Currently assuming bias is 1D, let Horace know if you run into this"
+     )
++    if _reax_td_ok(a, b, bias):
++        return _reax_td(a, b)
+     NUM_SMS = num_compute_units(a.device.index)
+     M, K = a.shape
+     K, N = b.shape
+@@ -1170,3 +1172,76 @@
+         torch.backends.cuda.matmul.fp32_precision = "ieee"
+         torch.backends.cudnn.conv.fp32_precision = "ieee"
+         torch.backends.cudnn.rnn.fp32_precision = "ieee"
++
++
++_REAX_TD = os.environ.get("REAX_DENSE_TD", "1") == "1"
++_REAX_TD_CFG = {
++    (8192, 2816): 8, (10240, 2816): 8, (2816, 8192): 8,   # num_warps per (N, K); BLOCK 128x128x64, 3 stages, GROUP 8
++    (2816, 4096): 4, (4224, 2816): 4, (2816, 2112): 4,
++}
++_REAX_TD_ALLOC = [False]
++
++
++def _reax_td_ok(a, b, bias) -> bool:
++    if not _REAX_TD or bias is not None or not a.is_cuda or a.dtype != torch.bfloat16 or b.dtype != torch.bfloat16:
++        return False
++    M, K = a.shape
++    N = b.shape[1]
++    return M >= 1024 and (N, K) in _REAX_TD_CFG and a.is_contiguous() and b.t().is_contiguous()
++
++
++_REAX_LT = os.environ.get("REAX_DENSE_LT", "1") == "1"
++_REAX_LT_STATE = {"algos": None}
++
++
++def _reax_lt_algos():
++    st = _REAX_LT_STATE
++    if st["algos"] is not None:
++        return st["algos"]
++    st["algos"] = {}
++    if not _REAX_LT:
++        return st["algos"]
++    try:
++        import reax_lt
++        algos = torch.load(os.environ.get("REAX_LT_ALGOS", "/opt/rune/lt_algos.pt"))
++        g = torch.Generator(device="cuda").manual_seed(1234)
++        ok = {}
++        for (N, K), algo in algos.items():
++            w = (torch.randn(N, K, device="cuda", generator=g) * 0.02).bfloat16()
++            good = True
++            for M in (1024, 1537, 4099, 11170):
++                x = torch.randn(M, K, device="cuda", generator=g).bfloat16()
++                if not torch.equal(reax_lt.mm(x, w, algo), _reax_td_triton(x, w)):
++                    good = False
++                    break
++            if good:
++                ok[(N, K)] = algo
++        st["algos"] = ok
++        st["mm"] = reax_lt.mm
++        print(f"reax_lt: cuBLASLt pinned algorithms bit-exact for {sorted(ok)} of {sorted(algos)}", flush=True)
++    except Exception as e:  # noqa: BLE001 - no extension / no file / unsupported card: Triton path
++        print(f"reax_lt: disabled ({e!r})", flush=True)
++    return st["algos"]
++
++
++def _reax_td(a, b):
++    w = b.t()
++    algo = _reax_lt_algos().get((w.shape[0], w.shape[1]))
++    if algo is not None:
++        return _REAX_LT_STATE["mm"](a, w, algo)
++    return _reax_td_triton(a, w)
++
++
++def _reax_td_triton(a, w):
++    if not _REAX_TD_ALLOC[0]:
++        triton.set_allocator(lambda size, align, stream: torch.empty(size, dtype=torch.int8, device="cuda"))
++        _REAX_TD_ALLOC[0] = True
++    M, K = a.shape
++    N = w.shape[0]
++    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
++    nsms = num_compute_units(a.device.index)
++    grid = (min(nsms, triton.cdiv(M, 128) * triton.cdiv(N, 128)),)
++    matmul_kernel_descriptor_persistent[grid](a, w, c, None, M, N, K, BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=64,
++                                              GROUP_SIZE_M=8, NUM_SMS=nsms, HAS_BIAS=False,
++                                              num_warps=_REAX_TD_CFG[(N, K)], num_stages=3)
++    return c

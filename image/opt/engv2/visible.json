@@ -1,0 +1,189 @@
+{
+ "35/16314a2ea89334059ed056ee4f2aa95e62d9c92230a115d8aa6f962bd2d6adae.best_config": {
+  "R0_BLOCK": 1024,
+  "XBLOCK": 1,
+  "configs_hash": "8a75395ac9ba1d455490d907d5689a4fc23d5de515606fef275d309206236e4f",
+  "num_stages": 1,
+  "num_warps": 8
+ },
+ "46/d6db409d5327cf0002a157cbf02c1aa8ba26cbb63e22792a5d54aa8877629c43.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "55/6fae6455a90b08aa0f59d896f1b5bc1f7d405edeed973c5ee92719e30f6d3e45.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "5b/8d766921e664e36816cd5ec3c747b9f8436b92703673a703434919a2ea27d1fd.best_config": {
+  "R0_BLOCK": 4096,
+  "XBLOCK": 1,
+  "configs_hash": "8a75395ac9ba1d455490d907d5689a4fc23d5de515606fef275d309206236e4f",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "67/409db348a8b35ec4498f25035cdf674184f2a82be804d6f14a995ad72e8e4a42.best_config": {
+  "R0_BLOCK": 512,
+  "XBLOCK": 8,
+  "configs_hash": "ce5427ea9bb4d94a0fdc0eb605034ef9fa5fff48369d33faa79cdafe38c39a20",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "6l/ec6beee3affb66743bd58e9c7164caa990fe1436eb4b62f173ecba71f54160c2.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "38e898e75d00f59a1233bd431c366c4aec35c0b83fd2d1f5c81d0f12b8160a3e",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "7s/e37c429c881fa7190620f589de2270c61caed693973f5ad4a29f0371fdc44538.best_config": {
+  "R0_BLOCK": 32,
+  "XBLOCK": 32,
+  "configs_hash": "ba59d31ffb3b3566ffd10981080ecdefa802dd86ee3b8481bf6d7c591bc22bd2",
+  "num_stages": 1,
+  "num_warps": 4
+ },
+ "c3/4aefa6a25752ee7193d85617a760524a4e43115db4fce7b76ff36b1e1672c871.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "9f5a31c121d1f11b50fae5e1802eb0175a999a591e5fe00d13bc0dd52b1fee45",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "e7/eec38b4b3be2e856cb3c7781b567fd90512f07afebaf95f38c9560f9bcdfcb85.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "9f5a31c121d1f11b50fae5e1802eb0175a999a591e5fe00d13bc0dd52b1fee45",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "gb/b1198a4e76d53730cefee966e5199d7ff0a7aedc9e1ab91fe7d8f3c5edd5f964.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "gr/8bd77dd00674cb005d63530ccf2a6e2dab7acfd09bc8dc0b7fa69575fba49152.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "hf/ccd577b67714f6e9eda2cb55802375bd92e198d7e6c9b3d7a5aab9288f28e071.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "ba59d31ffb3b3566ffd10981080ecdefa802dd86ee3b8481bf6d7c591bc22bd2",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "j3/42ae1e63707bae55482e0763bda8da6138933e63ba66441b7ef0ff42aff7a423.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "9f5a31c121d1f11b50fae5e1802eb0175a999a591e5fe00d13bc0dd52b1fee45",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "jv/d1717170af01c5ff271c779e484b5e8fcf7c08c5f1eed86dee47e175946fbdcf.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "no/e6d93bf617d8cec9d9b4591eb5d4ad6e27173b719e1a4da3b6817c79083e9ac2.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "ba59d31ffb3b3566ffd10981080ecdefa802dd86ee3b8481bf6d7c591bc22bd2",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "pm/1c4a53aefbd230c8ac27838f1c73b2cc08eab86199023e38aa3906edde0c8899.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "py/a2feb28a7cbaf6ec1c59be94de8846d63e5e507c423d071bc5b064385f511f8d.best_config": {
+  "R0_BLOCK": 512,
+  "XBLOCK": 8,
+  "configs_hash": "9f5a31c121d1f11b50fae5e1802eb0175a999a591e5fe00d13bc0dd52b1fee45",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "qb/3debb46a34118d008a71c39eaf681abddc7155813f4d2a212e2bdb09982af785.best_config": {
+  "R0_BLOCK": 512,
+  "XBLOCK": 1,
+  "configs_hash": "ce5427ea9bb4d94a0fdc0eb605034ef9fa5fff48369d33faa79cdafe38c39a20",
+  "num_stages": 1,
+  "num_warps": 4
+ },
+ "se/b09a5287eea2491f65ed984e46d472f6baa245dcd3405824bac5e7fae6d040e8.best_config": {
+  "XBLOCK": 1024,
+  "configs_hash": "3ca5c3e34d35093f3c9ab2829a9faeebad5e61c4ca13d5ed6053d7b71ce60d5a",
+  "num_stages": 1,
+  "num_warps": 4
+ },
+ "th/bc4811928929b93990acfa171a94556741ee8fc54fc453dc3b0d67e632c9efc0.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "9f5a31c121d1f11b50fae5e1802eb0175a999a591e5fe00d13bc0dd52b1fee45",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "uf/85aba14fb49ee97e7615e84ed2d42b5b17309f62d42ef925b729bb1f0fc1c6c5.best_config": {
+  "XBLOCK": 1024,
+  "configs_hash": "3ca5c3e34d35093f3c9ab2829a9faeebad5e61c4ca13d5ed6053d7b71ce60d5a",
+  "num_stages": 1,
+  "num_warps": 4
+ },
+ "ve/687a35c83492486700515025234b4f5fa370689e160f0f65452ee3501287ba3f.best_config": {
+  "R0_BLOCK": 256,
+  "XBLOCK": 2,
+  "configs_hash": "ba59d31ffb3b3566ffd10981080ecdefa802dd86ee3b8481bf6d7c591bc22bd2",
+  "num_stages": 1,
+  "num_warps": 4
+ },
+ "xg/ad326bf3bdf903f296301a3319988383457cef6146919bbba37da393feb834bf.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "xk/1715d3432872f05e5f02b41be4445e177a8be5df447158b59d1e51e805399bd0.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "f22ccc5dd0793db62486a5ca0de8c677aa5816544a2ae23331fc5d3d9fbb8d48",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "xu/a726a4e5535bf9409f9c6725f5f8efdf1725e4fd80a55f230f8664d3ca50fba5.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "38e898e75d00f59a1233bd431c366c4aec35c0b83fd2d1f5c81d0f12b8160a3e",
+  "num_stages": 1,
+  "num_warps": 16
+ },
+ "z4/1204e7ba7790ea81efc764fc141c41bfa0d8b94290e6e10ed126fe9476592b4f.best_config": {
+  "R0_BLOCK": 512,
+  "XBLOCK": 1,
+  "configs_hash": "ce5427ea9bb4d94a0fdc0eb605034ef9fa5fff48369d33faa79cdafe38c39a20",
+  "num_stages": 1,
+  "num_warps": 4
+ },
+ "zp/45d91e247a51113611995ff6cfd01b3a8a4cdd9ae6ecfeb04b4a8ab8b6753bb2.best_config": {
+  "R0_BLOCK": 64,
+  "XBLOCK": 64,
+  "configs_hash": "9f5a31c121d1f11b50fae5e1802eb0175a999a591e5fe00d13bc0dd52b1fee45",
+  "num_stages": 1,
+  "num_warps": 16
+ }
+}

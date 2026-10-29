@@ -1,0 +1,117 @@
+ARG BASE=ghcr.io/reaxlabs/reax-engine-ref-blink@sha256:97d06a91453979d6756176aba4a1cb1d78b38390643c37ed1b83f79a4ff9f606
+FROM ${BASE} AS lt
+COPY sidecar/reax_lt/reax_lt.cpp sidecar/reax_lt/setup.py /build/
+RUN cd /build && TORCH_CUDA_ARCH_LIST=12.0 python3 setup.py build_ext --inplace >/tmp/build.log 2>&1 || (tail -30 /tmp/build.log; exit 1)
+
+FROM ${BASE}
+ARG SP=/usr/local/lib/python3.12/dist-packages
+COPY engv2/blink/d1_dense.patch engv2/blink/d1_attn.patch engv2/blink/lt_derive.py engv2/blink/dense_op.py /opt/engv2/
+RUN cd $SP && patch -p1 --forward < /opt/engv2/d1_dense.patch \
+    && patch -p1 --forward < /opt/engv2/d1_attn.patch \
+    && python3 /opt/engv2/lt_derive.py vllm/model_executor/determinism/batch_invariant.py \
+    && python3 /opt/engv2/dense_op.py vllm/model_executor/determinism/batch_invariant.py
+COPY --from=lt /build/reax_lt.cpython-312-x86_64-linux-gnu.so $SP/
+COPY engv2/blink/engv2_stream.py /opt/reax/engine/engv2_stream.py
+COPY engv2/blink/stream_patch.py engv2/blink/image_route.py engv2/blink/engv2_pins.py engv2/blink/entry_dual.sh /opt/engv2/
+RUN python3 /opt/engv2/stream_patch.py /opt/reax/engine/serve.py \
+    && python3 /opt/engv2/image_route.py /opt/reax/engine/backends/vllm_readout.py \
+    && python3 -m compileall -q /opt/reax/engine
+COPY engv2/blink/core_gather.py engv2/blink/core_poll.py engv2/blink/core_group.py engv2/blink/step_cap.py /opt/engv2/
+RUN python3 /opt/engv2/core_gather.py $SP/vllm/v1/engine/core.py && python3 /opt/engv2/core_poll.py $SP/vllm/v1/engine/core.py \
+    && python3 /opt/engv2/core_group.py $SP/vllm/v1/engine/core.py \
+    && python3 /opt/engv2/step_cap.py $SP/vllm/v1/core/sched/scheduler.py \
+    && python3 -m compileall -q $SP/vllm/v1/engine/core.py $SP/vllm/v1/core/sched/scheduler.py
+COPY engv2/blink/one_req.py /opt/engv2/
+RUN python3 /opt/engv2/one_req.py $SP/vllm/entrypoints/openai/completion/serving.py \
+    && python3 -m compileall -q $SP/vllm/entrypoints/openai/completion/serving.py
+COPY engv2/blink/autotune_hidden.py engv2/blink/pins/visible.json engv2/blink/pins/hidden.json /opt/engv2/
+RUN python3 /opt/engv2/autotune_hidden.py install $SP
+COPY engv2/blink/bf16g/bf16gemm.cu engv2/blink/bf16g/bf16g.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -cubin -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/bf16gemm.cubin /opt/engv2/bf16gemm.cu \
+    && cp /opt/engv2/bf16g.py $SP/reax_bf16g.py
+COPY engv2/blink/bf16g7/bf16g7.cu engv2/blink/bf16g7/allow_pro6000.txt /opt/engv2/
+RUN nvcc -arch=sm_120a -O3 -cubin -Xptxas -v -o /opt/engv2/bf16g7.cubin /opt/engv2/bf16g7.cu >/dev/null \
+    && mv /opt/engv2/allow_pro6000.txt /opt/engv2/bf16g7_allow.txt
+ENV REAX_BF16G7=1
+COPY engv2/blink/bf16g7/b7sk.cu /opt/engv2/
+RUN nvcc -arch=sm_120a -O3 -cubin -Xptxas -v -o /opt/engv2/b7sk.cubin /opt/engv2/b7sk.cu >/dev/null
+COPY engv2/blink/lt_small4.py engv2/blink/lt_vis.py engv2/blink/lt_frozen.py /opt/engv2/
+RUN python3 /opt/engv2/lt_vis.py $SP/vllm/model_executor/determinism/batch_invariant.py \
+    && python3 /opt/engv2/lt_small4.py $SP/vllm/model_executor/determinism/batch_invariant.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/determinism
+COPY engv2/blink/fp8d/f8gemm.cu engv2/blink/fp8d/f8cubin.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -cubin -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/f8gemm.cubin /opt/engv2/f8gemm.cu \
+    && cp /opt/engv2/f8cubin.py $SP/reax_f8cubin.py
+COPY engv2/blink/moe_gquant.cu engv2/blink/moe_gquant.py engv2/blink/moe_unperm.py /opt/engv2/
+RUN nvcc -O3 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120f,code=sm_120f -o /opt/engv2/libreax_gquant.so /opt/engv2/moe_gquant.cu \
+    && F=$SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 /opt/engv2/moe_unperm.py $F && python3 /opt/engv2/moe_gquant.py $F \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+COPY engv2/blink/moe_gact.cu engv2/blink/moe_gact.py engv2/blink/moe_dn.cu engv2/blink/moe_dn.py /opt/engv2/
+RUN nvcc -O3 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120f,code=sm_120f -o /opt/engv2/libreax_gact.so /opt/engv2/moe_gact.cu \
+    && nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_moedn.so /opt/engv2/moe_dn.cu \
+    && F=$SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 /opt/engv2/moe_gact.py $F && python3 /opt/engv2/moe_dn.py $F \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+COPY engv2/blink/moe_gu.cu engv2/blink/moe_gu.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_moegu.so /opt/engv2/moe_gu.cu \
+    && F=$SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 /opt/engv2/moe_gu.py $F \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+COPY engv2/blink/moe_data.cu engv2/blink/moe_data.py /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_moedata.so /opt/engv2/moe_data.cu \
+    && python3 /opt/engv2/moe_data.py $SP/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/experts
+COPY engv2/blink/rgemm/rgemm.cu engv2/blink/rgemm/rgemm.py engv2/blink/rgemm/router_op.py /opt/engv2/
+RUN nvcc -arch=sm_120a -O3 -cubin -o /opt/engv2/rgemm.cubin /opt/engv2/rgemm.cu \
+    && python3 /opt/engv2/router_op.py install $SP/vllm/model_executor/layers/fused_moe/router/gate_linear.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/fused_moe/router
+COPY engv2/blink/vis_norm.py engv2/blink/vis_rope.py engv2/blink/vis_mlp.py engv2/blink/vis_pack.py engv2/blink/vis_attn.cu engv2/blink/entry_m1.sh /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_vattn.so /opt/engv2/vis_attn.cu \
+    && F=$(python3 -c "import transformers,os;print(os.path.dirname(transformers.__file__))")/models/gemma4/modeling_gemma4.py \
+    && python3 /opt/engv2/vis_norm.py $F && python3 /opt/engv2/vis_rope.py $F && python3 /opt/engv2/vis_mlp.py $F \
+    && python3 /opt/engv2/vis_pack.py $F \
+    && python3 -m compileall -q $(dirname $F)
+COPY engv2/blink/vis_pack1.py engv2/blink/vis_pool1.py engv2/blink/vis_attn2.cu /opt/engv2/
+RUN nvcc -O3 -std=c++17 -shared -Xcompiler -fPIC -Xlinker --strip-all -gencode arch=compute_120a,code=sm_120a -o /opt/engv2/libreax_vattn2.so /opt/engv2/vis_attn2.cu \
+    && F=$(python3 -c "import transformers,os;print(os.path.dirname(transformers.__file__))")/models/gemma4/modeling_gemma4.py \
+    && python3 /opt/engv2/vis_pack1.py $F && python3 /opt/engv2/vis_pool1.py $SP \
+    && python3 -m compileall -q $(dirname $F) $SP/vllm/model_executor/models/gemma4_mm.py
+COPY sidecar/reax_fused.py $SP/reax_fused.py
+COPY engv2/blink/lm_fused.patch /opt/engv2/
+RUN cd $SP && patch -p1 --forward < /opt/engv2/lm_fused.patch && python3 -m compileall -q vllm/model_executor/models/gemma4.py
+COPY engv2/blink/blink_overlay.py engv2/blink/head_sub.py engv2/blink/last_rows.py engv2/blink/last_rows_fused.py engv2/blink/samp_fast.py /opt/engv2/
+RUN python3 /opt/engv2/blink_overlay.py build $SP /opt/engv2/overlay \
+    && python3 /opt/engv2/head_sub.py install /opt/engv2/overlay/logits_processor.py \
+    && python3 /opt/engv2/samp_fast.py install $SP/vllm /opt/engv2/overlay/logits_processor.py \
+    && python3 -m compileall -q $SP/vllm/v1/worker/gpu/sample \
+    && python3 /opt/engv2/last_rows.py /opt/engv2/overlay/gemma4.py /opt/engv2/overlay/model_runner.py \
+    && python3 /opt/engv2/last_rows_fused.py /opt/engv2/overlay/gemma4.py \
+    && python3 -m compileall -q /opt/engv2/overlay $SP/engv2_overlay.py
+COPY engv2/blink/near_lt.py /opt/engv2/
+RUN python3 /opt/engv2/near_lt.py $SP/vllm/model_executor/determinism/batch_invariant.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/determinism
+COPY engv2/blink/fp8d/fp8d.py /opt/engv2/
+RUN cp /opt/engv2/fp8d.py $SP/reax_fp8d.py \
+    && python3 /opt/engv2/fp8d.py install $SP/vllm/model_executor/layers/linear.py \
+    && python3 -m compileall -q $SP/vllm/model_executor/layers/linear.py $SP/reax_fp8d.py $SP/reax_f8cubin.py
+COPY engv2/blink/inproc.py engv2/blink/thread_cpu.py engv2/blink/fn_cpu.py engv2/blink/enc_fast.py engv2/blink/spin_keep.py /opt/reax/engine/
+COPY engv2/blink/inproc_patch.py /opt/engv2/
+RUN python3 /opt/engv2/inproc_patch.py /opt/reax/engine/backends/vllm_readout.py && python3 -m compileall -q /opt/reax/engine
+COPY engv2/blink/nodetok.py /opt/engv2/
+RUN python3 /opt/engv2/nodetok.py $SP/vllm/entrypoints/openai/completion/serving.py \
+    && python3 -m compileall -q $SP/vllm/entrypoints/openai/completion
+ENV REAX_ATT_TILES=256:32:4:1,512:32:8:1 \
+    REAX_STREAM=half REAX_HALF_CAP=1 REAX_HALF_SPACE_MS=5 REAX_HALF_IDLE_HOLD_MS=6 REAX_GROUP_TAG=1 REAX_STEP_NEW_MAX=8 \
+    REAX_PINS_FILE=/opt/engv2/visible.json REAX_HIDDEN_PINS=/opt/engv2/hidden.json \
+    REAX_LT_SMALL_FILE=/tmp/reax_lt_small.pt REAX_LT_VIS_FILE=/tmp/reax_lt_vis.pt \
+    REAX_MOE_GQUANT_FILE=/tmp/reax_moe_gquant.txt REAX_MOE_UNPERM_FILE=/tmp/reax_moe_unperm.txt \
+    REAX_MOE_GACT_FILE=/tmp/reax_moe_gact.txt REAX_MOE_DN_FILE=/tmp/reax_moe_dn.txt REAX_MOE_GU_FILE=/tmp/reax_moe_gu.txt \
+    REAX_VIS_NORM_FILE=/tmp/reax_vis_norm.txt REAX_VIS_ROPE_FILE=/tmp/reax_vis_rope.txt REAX_VIS_MLP_FILE=/tmp/reax_vis_mlp.txt \
+    REAX_VIS_PACK_FILE=/tmp/reax_vis_pack.txt REAX_BF16G_CUBIN=/opt/engv2/bf16gemm.cubin \
+    REAX_F8GEMM_CUBIN=/opt/engv2/f8gemm.cubin
+ENV REAX_VLLM_EXTRA="--gpu-memory-utilization 0.24 --compilation-config={\"cudagraph_mode\":\"FULL\",\"cudagraph_capture_sizes\":[1,2,4,8,16,24,32,40,48,56,64,96,128,160,192,224,256,288,320,352,384,416,448,480,512,576,640,656,672,688,704,720,736,752,768,784,800,816,832,848,864,880,896,912,928,944,960,976,992,1008,1024,1040,1056,1072,1088,1104,1120,1136,1152,1168,1184,1200,1216,1232,1248,1264,1280,1344,1408,1472,1536,1600,1664,1728,1792,1856,1920,1984,2048,2112,2176,2240,2304,2368,2432,2496,2560]}" \
+    REAX_DUAL=1
+COPY sidecar/reax_lt/reax_lt.cpp sidecar/reax_lt/setup.py /build/
+LABEL ai.reax.engine.models="blink,vision"
+ENTRYPOINT ["/opt/engv2/entry_m1.sh"]
